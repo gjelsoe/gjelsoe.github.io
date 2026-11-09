@@ -137,6 +137,40 @@ async function t(name, fn) {
     assert(n.onRequest(S.OP_READ, pl)); assert(n.finished); assert.strictEqual(n.poll(1e9), null);
     assert.throws(() => C.parseTargets('693FAE0783'), /at least 12/);
   });
+  await t('handover: host command, copy progress, verified, then the node takes the nudges', async () => {
+    const mota = rd('js_seq.mota'), m = C.parseMota(mota), mid = C.toHex(m.mid);
+    const h = new C.Handover({ mid: m.mid, total: mota.length, prefixes: C.parseTargets('693FAE0783D124C3 aabbccddeeff'),
+      install: false, pollMs: 3000, stallMs: 60000, confirmMs: 5000, now: 0 });
+    assert.strictEqual(h.poll(0), `ota host ${mid}`);
+    assert.strictEqual(h.poll(100), null);
+    assert.deepStrictEqual(h.onLine(`  -> OK importing mid=${mid} (${mota.length} B) from the folder`, 200).level, 'info');
+    h.onRead(0, 241, 300); h.onRead(241, mota.length - 241 - 1000, 400);
+    assert.strictEqual(h.state, 'importing'); assert(h.pct > 0 && h.pct < 100);
+    assert.strictEqual(h.poll(3100), 'ota host');                              // status poll once quiet
+    h.onLine(`  -> host: importing mid=${mid} 9/${mota.length} B (1%) from the folder`, 3200);   // stale: progress kept
+    assert(h.pct > 1);
+    assert.strictEqual(h.onLine(`  -> host: serving mid=${mid} (60 blocks)`, 3300).level, 'ok');
+    assert.strictEqual(h.poll(3400), 'ota host nudge 693FAE0783D1 fetch');
+    assert.strictEqual(h.poll(4000), null);                                   // waits for the confirmation
+    h.onLine('  -> OK this node nudges 693FAE0783D1 (fetch) up to 5 times, 120s apart, once it is hosting', 4100);
+    assert.strictEqual(h.poll(4200), 'ota host nudge AABBCCDDEEFF fetch');
+    assert.strictEqual(h.poll(9300), 'ota host nudge AABBCCDDEEFF fetch');    // unconfirmed: sent again
+    h.onLine('  -> OK this node nudges AABBCCDDEEFF (fetch) up to 5 times', 9400);
+    assert.strictEqual(h.poll(9500), null); assert.strictEqual(h.state, 'done'); assert(h.finished);
+    // refusals end it with the node's reason
+    const r = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); r.poll(0);
+    assert.strictEqual(r.onLine('  -> ERR not signed by a trusted key (`ota key add <signer>`)', 1).level, 'err');
+    assert(r.finished && /trusted key/.test(r.error));
+    const o = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); o.poll(0);
+    o.onLine('  -> Unknown OTA command. Type `ota help`.', 1); assert(/cannot host/.test(o.error));
+    const v = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); v.poll(0); v.onRead(0, 100, 10);
+    v.onLine(`  -> host: not hosting (last mid=${mid}: verification failed)`, 20); assert(/verification failed/.test(v.error));
+    // a lost start line is sent again; a stalled copy fails
+    const l = new C.Handover({ mid: m.mid, total: mota.length, startTries: 2, now: 0 }); l.poll(0);
+    l.onLine('  -> host: not hosting. `ota host <mid8>` keeps a .mota from the folder', 3000);
+    assert.strictEqual(l.poll(3100), `ota host ${mid}`);
+    l.onRead(0, 100, 3200); assert.strictEqual(l.poll(3200 + 61000), null); assert(/stopped copying/.test(l.error));
+  });
   console.log(fails ? `\n${fails} FAILED` : '\nall passed');
   process.exit(fails ? 1 : 0);
 })();

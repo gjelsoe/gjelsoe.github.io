@@ -18,6 +18,11 @@ Each target acts only if it was set up once with `ota key add <your signer publi
 `ota config push trusted` — it checks the signature before it downloads anything, so no password is involved.
 Keep the page open until the nodes have the update; *Disconnect* sends `ota folder off`.
 
+Or click **Hand over to the USB node**: the page sends `ota host <mid>`, the node copies the package into its
+own flash (the page shows the copy from the READs it answers), verifies it and serves it itself; the page then
+sends `ota host nudge <key>` for each target, and the computer can be disconnected (docs/ota_protocol.md §8.8).
+The USB node needs firmware with `ota host` and must trust the signing key too.
+
 ## Build and test
 
 ```sh

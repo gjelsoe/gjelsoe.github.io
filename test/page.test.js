@@ -85,8 +85,36 @@ const FAKE_SERIAL = () => {
     }
     sim.fetched = true;
   }
+  // `ota host <mid>`: the node copies the whole .mota from the page (sequential READs), then serves it itself
+  async function hostCopy() {
+    const chunks = []; sim.hostState = 'importing';
+    for (let off = 0; off < sim.desc.total; off += 512) {
+      const len = Math.min(512, sim.desc.total - off);
+      const r = await request(3, [0, ...u32(off), len & 255, len >> 8], len);
+      chunks.push(...r.payload); sim.hostCopied = off + len;
+    }
+    sim.hostCopy = chunks; sim.hostState = 'serving';
+  }
   function onLine(line) {
     sim.lines.push(line);
+    const mid = () => sim.desc.mid.map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    let h;
+    if ((h = /^ota host ([0-9A-F]{8})$/.exec(line))) {
+      sim.hostCmd = h[1];
+      sendText(`  -> OK importing mid=${h[1]} (${sim.desc.total} B) from the folder; \`ota host\` shows progress\r\n`);
+      setTimeout(hostCopy, 20); return;
+    }
+    if (line === 'ota host') {
+      sim.hostPolls = (sim.hostPolls || 0) + 1;
+      sendText(sim.hostState === 'serving' ? `  -> host: serving mid=${mid()} (${sim.desc.blocks} blocks)\r\n`
+        : `  -> host: importing mid=${mid()} ${sim.hostCopied || 0}/${sim.desc.total} B from the folder — keep it connected\r\n`);
+      return;
+    }
+    if ((h = /^ota host nudge ([0-9A-F]{12})( fetch)?$/.exec(line))) {
+      (sim.hostNudges = sim.hostNudges || []).push(h[1]);
+      sendText(`  -> OK this node nudges ${h[1]} (${h[2] ? 'fetch' : 'fetch+install'}) up to 5 times, 120s apart, once it is hosting\r\n`);
+      return;
+    }
     if (line === 'ota folder on') { sendText('  -> OK folder attached\r\n'); serveSession(); }
     const m = /^ota nudge ([0-9A-F]{12}) ([0-9A-F]{8})( fetch)?$/.exec(line);
     if (m) {
@@ -163,6 +191,17 @@ const FAKE_SERIAL = () => {
   assert(/fetching blocks of this update/.test(log), 'fetch detection logged');
   const prog = await page.textContent('#progtext');
   console.log('ok    nudges:', sim.nudges.length, '| background seeder requests:', sim.background, '| progress:', prog.split('.')[0]);
+
+  // hand the package over to the USB node: it copies the whole .mota, then takes over the nudges
+  await page.click('#handover');
+  await page.waitForFunction(() => /disconnect this computer now/.test(document.querySelector('#hostmsg').textContent), null, { timeout: 60000 });
+  const sim2 = await page.evaluate(() => window.__sim);
+  assert.strictEqual(sim2.hostCmd, mid, 'ota host <mid>');
+  assert(Buffer.from(sim2.hostCopy).equals(want), 'the node copied the exact package');
+  assert.deepStrictEqual(sim2.hostNudges.slice().sort(), ['693FAE0783D1', 'AABBCCDDEEFF'], 'host nudges: ' + sim2.hostNudges);
+  assert.deepStrictEqual(sim2.problems, [], 'wire problems during hand-over: ' + sim2.problems.join('; '));
+  assert(/2 of 2 node/.test(await page.textContent('#hostmsg')));
+  console.log('ok    handed over: node copied', sim2.hostCopy.length, 'B, polls', sim2.hostPolls, '| node nudges', sim2.hostNudges.length);
 
   await page.click('#disconnect');
   await page.waitForFunction(() => /ota folder off\r\n$/.test(new TextDecoder().decode(Uint8Array.from(window.__sim.rx.slice(-40)))), null, { timeout: 8000 });
