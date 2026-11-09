@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore OTA Push</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6673; --line: #dde1e6;
+  --accent: #1f6feb; --accent-text: #ffffff; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+  --code-bg: #f0f2f5; --bar: #d0d7de;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --panel: #171b21; --text: #e6e9ed; --muted: #9aa4b1; --line: #2a313a;
+    --accent: #4c8dff; --accent-text: #0b0e12; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    --code-bg: #11151a; --bar: #2a313a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --panel: #171b21; --text: #e6e9ed; --muted: #9aa4b1; --line: #2a313a;
+  --accent: #4c8dff; --accent-text: #0b0e12; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  --code-bg: #11151a; --bar: #2a313a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.lede { color: var(--muted); margin: 0 0 20px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 0 0 14px; }
+section h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px; align-items: baseline; }
+section h2 .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+label { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 14px; }
+.hint { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 9px; }
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; resize: vertical; }
+input[type=file] { font: inherit; max-width: 100%; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+@media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+button { font: inherit; font-weight: 600; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); }
+button.secondary { background: transparent; color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+.check { display: flex; gap: 8px; align-items: center; font-weight: 400; }
+.summary { margin-top: 12px; display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 14px; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.msg { margin: 10px 0 0; padding: 8px 10px; border-radius: 6px; font-size: 14px; border-left: 3px solid var(--line); background: var(--code-bg); }
+.msg.ok { border-color: var(--ok); } .msg.warn { border-color: var(--warn); } .msg.err { border-color: var(--err); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: var(--code-bg); padding: 1px 4px; border-radius: 4px;  overflow-wrap: anywhere; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bar); }
+.dot.on { background: var(--ok); }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+td.mono { background: none; }
+.bar { height: 8px; background: var(--bar); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+.bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+#log { height: 240px; overflow: auto; margin: 0; padding: 8px 10px; background: var(--code-bg); border-radius: 6px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+#log .dev { color: var(--muted); } #log .err { color: var(--err); } #log .ok { color: var(--ok); }
+.cmd { display: flex; gap: 8px; margin-top: 8px; } .cmd input { flex: 1; }
+details summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>MeshCore OTA Push</h1>
+  <p class="lede">Build a signed update in this browser and push it to one or more specific nodes through a repeater on USB.
+    Nothing is uploaded anywhere: the firmware and your signing key stay on this computer.</p>
+  <p id="env" class="msg warn" hidden></p>
+
+  <section>
+    <h2><span class="n">1</span> Package</h2>
+    <label for="fw">New firmware</label>
+    <input id="fw" type="file" accept=".bin,.hex,.mota">
+    <p class="hint">An OTA build (<code>ENABLE_OTA</code>, carries the EndF trailer): ESP32 <code>firmware.bin</code>, nRF52 <code>firmware.hex</code>, or a ready <code>.mota</code>.</p>
+    <label for="base">Firmware installed on the node <span class="hint">(optional, makes a small delta)</span></label>
+    <input id="base" type="file" accept=".bin,.hex">
+    <p class="hint">Must be the exact image running on the node. Leave empty to send the full image. Automatic delta type: <code>.hex</code> = nRF52 in-place, <code>.bin</code> = ESP32 sequential.</p>
+    <div class="row">
+      <div>
+        <label for="ptype">Delta type</label>
+        <select id="ptype">
+          <option value="auto">Automatic (by file type)</option>
+          <option value="sequential">Sequential (ESP32 A/B)</option>
+          <option value="in-place">In-place (nRF52 OTAFIX bootloader)</option>
+        </select>
+        <label for="compress">Compression (ESP32 delta)</label>
+        <select id="compress">
+          <option value="auto">Automatic: LZMA when smaller</option>
+          <option value="crle">Off: works with any OTA firmware</option>
+        </select>
+      </div>
+      <div>
+        <label for="key">Signing key</label>
+        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="64 hex chars from motatool keygen">
+        <p class="hint"><input id="keyfile" type="file" hidden><a href="#" id="keyload">Load key file</a> · <a href="#" id="keygen">Create a new key</a></p>
+      </div>
+    </div>
+    <p id="pub" class="hint" hidden></p>
+    <div class="actions">
+      <button id="build" disabled>Build package</button>
+      <button id="dl" class="secondary" disabled>Download .mota</button>
+    </div>
+    <p id="buildmsg" class="msg" hidden></p>
+    <dl id="summary" class="summary" hidden></dl>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span> Repeater on USB</h2>
+    <p class="hint" style="margin-top:0">Any of your nodes running OTA firmware with <code>ota folder</code> support. It serves the package to the mesh and sends the nudges.</p>
+    <div class="row">
+      <div>
+        <label for="baud">Speed</label>
+        <select id="baud"><option>115200</option><option>230400</option><option>460800</option><option>921600</option></select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <span class="status"><span id="dot" class="dot"></span><span id="conn">Not connected</span></span>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="connect">Connect</button>
+      <button id="serve" disabled>Start serving</button>
+      <button id="disconnect" class="secondary" disabled>Disconnect</button>
+    </div>
+    <div class="bar" title="Share of the package's blocks the mesh has read from this page"><div id="progress"></div></div>
+    <p id="progtext" class="hint">No blocks served yet.</p>
+    <p id="stats" class="hint"></p>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span> Nodes to update</h2>
+    <label for="targets">Public keys, one per line</label>
+    <textarea id="targets" rows="3" spellcheck="false" placeholder="693FAE0783D124C39624A5C8513F7EDD172BF7660AC5E3F9087D2C3D6DCAEB6E"></textarea>
+    <p class="hint">The full key or at least its first 12 hex chars. Each node acts only if it has run, once:
+      <code>ota key add <span id="signerhint">&lt;your signing public key&gt;</span></code> and <code>ota config push trusted</code>.</p>
+    <label class="check"><input id="install" type="checkbox" checked> Install when downloaded and verified (otherwise download only)</label>
+    <details>
+      <summary>Retry settings</summary>
+      <div class="row">
+        <div><label for="retry">Re-send every (seconds)</label><input id="retry" type="number" min="10" value="120"></div>
+        <div><label for="tries">Sends per node</label><input id="tries" type="number" min="1" max="20" value="5"></div>
+      </div>
+    </details>
+    <div class="actions">
+      <button id="nudge" disabled>Send update request</button>
+      <button id="stopnudge" class="secondary" disabled>Stop</button>
+    </div>
+    <div style="overflow-x:auto"><table id="ttable" hidden><thead><tr><th>Node</th><th>Requests sent</th><th>Confirmed by repeater</th><th>State</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2><span class="n">4</span> Log</h2>
+    <pre id="log"></pre>
+    <label class="check" style="margin-top:8px"><input id="verbose" type="checkbox"> Show every seeder request</label>
+    <div class="cmd"><input id="cmd" type="text" placeholder="Console command for the USB node, e.g. ota status" disabled><button id="send" class="secondary" disabled>Send</button></div>
+  </section>
+</main>
+<!--SCRIPTS-->
+</body>
+</html>
