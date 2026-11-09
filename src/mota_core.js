@@ -416,6 +416,85 @@
     }
   }
 
+  /**
+   * Hand the package over to the USB node (`ota host <mid>`): the node copies the .mota from this page into its
+   * own flash (sequential seeder READs), verifies it, serves it to the mesh as its origin and sends the nudges
+   * itself (`ota host nudge <prefix>`), so the computer can be disconnected afterwards. The page only writes a
+   * console line when the seeder traffic is quiet, so progress during the copy comes from the READs it answers.
+   * States: start -> sent -> importing -> hosting (queue the nudge lines) -> done | failed.
+   */
+  class Handover {
+    constructor({ mid, total, prefixes = [], install = true, pollMs = 3000, stallMs = 60000, startTries = 3,
+      confirmMs = 6000, nudgeTries = 3, now = 0 }) {
+      Object.assign(this, { mid, total, install, pollMs, stallMs, startTries, confirmMs, nudgeTries });
+      this.midHex = toHex(mid); this.state = 'start'; this.copied = 0; this.tries = 0; this.error = null;
+      this.lastActivity = now; this.nextPoll = now;
+      this.t = prefixes.map((p) => ({ prefix: p, confirmed: false, sentAt: null, tries: 0 }));
+    }
+    get pct() { return this.total ? Math.min(100, Math.floor(100 * this.copied / this.total)) : 0; }
+    get finished() { return this.state === 'done' || this.state === 'failed'; }
+    fail(text) { this.state = 'failed'; this.error = text; return { level: 'err', text }; }
+    /** Seeder READ of [off, off+len) answered by the page (the node copying the package). */
+    onRead(off, len, now) {
+      if (this.state !== 'sent' && this.state !== 'importing') return;
+      this.state = 'importing'; this.copied = Math.max(this.copied, off + len); this.lastActivity = now;
+    }
+    /** The next console line to write (call only while the link is quiet), or null. */
+    poll(now) {
+      if (this.state === 'start') {
+        this.tries++; this.state = 'sent'; this.lastActivity = now; this.nextPoll = now + this.pollMs;
+        return `ota host ${this.midHex}`;
+      }
+      if (this.state === 'sent' || this.state === 'importing') {
+        if (now - this.lastActivity > this.stallMs) { this.fail('The USB node stopped copying the update.'); return null; }
+        if (now >= this.nextPoll) { this.nextPoll = now + this.pollMs; return 'ota host'; }
+        return null;
+      }
+      if (this.state === 'hosting') {
+        for (const t of this.t) {
+          if (t.confirmed || t.tries >= this.nudgeTries) continue;
+          if (t.sentAt !== null && now - t.sentAt < this.confirmMs) return null;   // wait for "OK this node nudges"
+          t.tries++; t.sentAt = now;
+          return `ota host nudge ${t.prefix}${this.install ? '' : ' fetch'}`;
+        }
+        this.state = 'done';
+      }
+      return null;
+    }
+    /** Feed console lines from the node; returns a note for the log, or null. */
+    onLine(text, now) {
+      let m;
+      const early = this.state === 'sent' || this.state === 'importing';
+      if (this.state === 'sent' && /Unknown OTA command/.test(text))
+        return this.fail('This node\'s firmware cannot host updates (no `ota host`). Update it first, or keep the page open and use Send update request.');
+      if ((m = /OK importing mid=([0-9A-F]{8})/i.exec(text)) && m[1].toUpperCase() === this.midHex) {
+        if (this.state === 'sent') this.state = 'importing';
+        this.lastActivity = now;
+        return { level: 'info', text: 'The USB node is copying the update into its own flash.' };
+      }
+      if ((m = /host: importing mid=([0-9A-F]{8}) (\d+)\/(\d+) B/i.exec(text)) && m[1].toUpperCase() === this.midHex) {
+        this.state = 'importing'; this.copied = Math.max(this.copied, +m[2]); this.lastActivity = now; return null;
+      }
+      if ((m = /host: serving mid=([0-9A-F]{8})/i.exec(text)) && m[1].toUpperCase() === this.midHex) {
+        if (!early) return null;
+        this.state = 'hosting'; this.copied = this.total;
+        return { level: 'ok', text: 'The USB node has verified the update and serves it to the mesh itself.' };
+      }
+      if (early && (m = /host: not hosting \(last mid=[0-9A-F]{8}: ([^)]*)\)/i.exec(text)))
+        return this.fail(`The USB node gave up: ${m[1]}.`);
+      if (this.state === 'sent' && /host: not hosting\./.test(text)) {   // our `ota host <mid>` line was lost
+        if (this.tries < this.startTries) { this.state = 'start'; return null; }
+        return this.fail('The USB node did not start copying the update.');
+      }
+      if (early && (m = /-> ERR (.*)/.exec(text))) return this.fail(`The USB node refused: ${m[1].trim()}`);
+      if ((m = /OK this node nudges ([0-9A-F]{12})/i.exec(text))) {
+        const t = this.t.find((x) => x.prefix === m[1].toUpperCase());
+        if (t) t.confirmed = true;
+      }
+      return null;
+    }
+  }
+
   // ---- airtime estimate (rough planning aid) ----------------------------------------------------------------
   /** OTA_DATA packets for a payload: 171-byte fragments, 6 per 1 KB block (OTA_FRAG_DATA). */
   const dataPackets = (payloadSize) => Math.ceil(payloadSize / BLOCK_SIZE) * Math.ceil(BLOCK_SIZE / 171);
@@ -424,7 +503,7 @@
     init, CODEC, SEEDER, FORMAT_VER, HASH_LEN, MFL, NUDGE_PREFIX, NRF52_INPLACE_MEMORY, NRF52_MAX_INPLACE_MOTA,
     toHex, fromHex, parseIntelHex, parseEndF, versionStr, encodeSequential, encodeInPlace, lzmaWrap, leafHashes, merkleRoot,
     parseSeed, publicKey, buildMota, parseMota, verifyMota, suggestedName, SeederCore, encodeResponse, WireParser,
-    parseTargets, Nudger, dataPackets, sha256,
+    parseTargets, Nudger, Handover, dataPackets, sha256,
   };
   return api;
 });

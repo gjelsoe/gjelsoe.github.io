@@ -152,7 +152,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-
     <div class="actions">
       <button id="nudge" disabled>Send update request</button>
       <button id="stopnudge" class="secondary" disabled>Stop</button>
+      <button id="handover" class="secondary" disabled>Hand over to the USB node</button>
     </div>
+    <p class="hint"><b>Send update request</b>: this page sends the requests and serves the update, so keep it open until the nodes have it.
+      <b>Hand over to the USB node</b>: the USB node copies the update into its own memory, serves it and sends the requests itself,
+      so you can disconnect the computer. That node must trust your signing key too (<code>ota key add</code>) and keeps one update at a time.</p>
+    <p id="hostmsg" class="msg" hidden></p>
     <div style="overflow-x:auto"><table id="ttable" hidden><thead><tr><th>Node</th><th>Requests sent</th><th>Confirmed by repeater</th><th>State</th></tr></thead><tbody></tbody></table></div>
   </section>
 

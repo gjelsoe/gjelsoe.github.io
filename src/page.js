@@ -91,7 +91,8 @@
     $('build').disabled = !$('fw').files[0] || building;
     $('dl').disabled = !pkg;
     $('serve').disabled = !(conn && pkg) || serving;
-    $('nudge').disabled = !(conn && pkg && serving && pkg.m.signed) || !!nudger;
+    $('nudge').disabled = !(conn && pkg && serving && pkg.m.signed) || !!nudger || !!handover;
+    $('handover').disabled = !(conn && pkg && serving && pkg.m.signed) || !!nudger || !!handover;
     $('stopnudge').disabled = !nudger;
     $('disconnect').disabled = !conn; $('connect').disabled = conn || !('serial' in navigator);
     $('cmd').disabled = $('send').disabled = !conn;
@@ -160,7 +161,7 @@
 
   // ---- serial link ----
   let port = null, reader = null, writer = null, writeChain = Promise.resolve(), parser = null;
-  let core = null, serving = false, nudger = null, tick = null, served = null;
+  let core = null, serving = false, nudger = null, tick = null, served = null, handover = null, hoTick = null;
   function write(bytes) { const w = writer; writeChain = writeChain.then(() => w && w.write(bytes)).catch(() => {}); return writeChain; }
   // Replies larger than the node's serial RX buffer are written in slices with a short pause: on ESP32-S3
   // native USB (HWCDC, e.g. Heltec V4) the default RX buffer is 256 bytes and overflowing bytes are dropped,
@@ -217,6 +218,11 @@
     if (ev.type === 'line') {
       log(ev.text, 'dev');
       if (nudger) nudger.onLine(ev.text, Date.now());
+      if (handover) {                                         // an error is logged once, when the hand-over ends
+        const note = handover.onLine(ev.text, Date.now());
+        if (note && note.level !== 'err') log(note.text, note.level === 'info' ? '' : note.level);
+        handoverTick();
+      }
       return;
     }
     if (ev.type !== 'req') return;
@@ -231,6 +237,12 @@
   }
   function trackRead(args) {
     const off = args[1] | (args[2] << 8) | (args[3] << 16) | (args[4] << 24), len = args[5] | (args[6] << 8), m = pkg.m;
+    if (handover && (handover.state === 'sent' || handover.state === 'importing')) {   // the USB node copying it
+      handover.onRead(off, len, Date.now());
+      $('progress').style.width = handover.pct + '%';
+      $('progtext').textContent = `Copying the update to the USB node: ${handover.pct}%.`;
+      return;
+    }
     if (off + len <= m.payloadOff) {
       if (off < m.leavesOff) {
         stats.manifest++;
@@ -281,6 +293,35 @@
   }
   function stopNudging() { clearInterval(tick); tick = null; renderTargets(); nudger = null; refresh(); }
   $('stopnudge').addEventListener('click', () => { log('Stopped sending requests.'); stopNudging(); });
+
+  // ---- hand the package over to the USB node (`ota host`): it keeps it, serves it and nudges by itself ----
+  $('handover').addEventListener('click', () => {
+    let prefixes;
+    try { prefixes = C.parseTargets($('targets').value); } catch (e) { log(e.message, 'err'); return; }
+    handover = new C.Handover({ mid: pkg.m.mid, total: pkg.bytes.length, prefixes, install: $('install').checked, now: Date.now() });
+    log(`Handing the update over to the USB node${prefixes.length ? ` (it will request it on ${prefixes.length} node(s))` : ''}.`);
+    msg($('hostmsg'), 'Copying the update to the USB node. Keep the page open until this says you can disconnect.', '');
+    hoTick = setInterval(handoverTick, 300); refresh();
+  });
+  function handoverTick() {
+    if (!handover || !writer) return;
+    if (!consoleQ.length && quiet()) { const line = handover.poll(Date.now()); if (line) writeLine(line); }
+    if (handover.state === 'hosting' || handover.state === 'done') {
+      $('progress').style.width = '100%';
+      $('progtext').textContent = 'The USB node holds the update and serves it to the mesh.';
+    }
+    if (!handover.finished) return;
+    clearInterval(hoTick); hoTick = null;
+    if (handover.state === 'done') {
+      const n = handover.t.length, ok = handover.t.filter((t) => t.confirmed).length;
+      const text = 'Done: the USB node keeps the update and serves it' + (n ? ` and requests it on ${ok} of ${n} node(s) itself` : '')
+        + '. You can disconnect this computer now. Check with `ota host` on the node.';
+      log(text, 'ok'); msg($('hostmsg'), text, 'ok');
+    } else {
+      log(handover.error, 'err'); msg($('hostmsg'), handover.error, 'err');
+    }
+    handover = null; refresh();
+  }
   function renderTargets() {
     if (!nudger) return;
     const tb = $('ttable').querySelector('tbody'); tb.innerHTML = '';
@@ -296,6 +337,11 @@
   async function disconnect() {
     const p = port;
     if (nudger) stopNudging();
+    if (handover) {                                         // disconnected mid-copy: the node gives up by itself
+      clearInterval(hoTick); hoTick = null;
+      if (handover.state !== 'hosting') msg($('hostmsg'), 'Disconnected before the USB node had the whole update; it was not handed over.', 'warn');
+      handover = null;
+    }
     clearInterval(linkTick); linkTick = null; consoleQ = [];
     if (serving && writer) {
       for (let i = 0; i < 30 && !quiet(); i++) await new Promise((r) => setTimeout(r, 100));   // up to 3 s for a gap
