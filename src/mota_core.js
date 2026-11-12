@@ -86,6 +86,72 @@
     return out;
   }
 
+  /** Cut a flat image right after its EndF trailer (UF2 pads the last block with 0xFF); unchanged if none. */
+  function cutAtEndF(img) {
+    for (let k = img.length - ENDF_LEN; k >= 0; k--) {
+      if (img[k] !== ENDF_MAGIC[0] || !equal(img.subarray(k, k + 4), ENDF_MAGIC)) continue;
+      if (rdU32(img, k + 4) === k) return img.subarray(0, k + ENDF_LEN);   // body_len == offset: the app's own
+    }
+    return img;
+  }
+  /** UF2 (what the nRF52 build drags onto the bootloader drive) -> flat app image from its lowest address. */
+  function parseUf2(buf) {
+    const MAG0 = 0x0A324655, MAG1 = 0x9E5D5157, MAGE = 0x0AB16F30, FLAG_NOFLASH = 0x1;
+    if (buf.length < 512 || buf.length % 512) throw new Error('not a UF2 file (size is not a multiple of 512)');
+    const parts = []; let lo = Infinity, hi = 0;
+    for (let o = 0; o < buf.length; o += 512) {
+      const b = buf.subarray(o, o + 512);
+      if (rdU32(b, 0) !== MAG0 || rdU32(b, 4) !== MAG1 || rdU32(b, 508) !== MAGE) throw new Error('not a UF2 file (bad block magic)');
+      if (rdU32(b, 8) & FLAG_NOFLASH) continue;
+      const addr = rdU32(b, 12), n = rdU32(b, 16);
+      if (n > 476) throw new Error('UF2 block payload too large');
+      parts.push([addr, b.subarray(32, 32 + n)]); lo = Math.min(lo, addr); hi = Math.max(hi, addr + n);
+    }
+    if (!parts.length) throw new Error('UF2 has no flash data');
+    const out = new Uint8Array(hi - lo).fill(0xff);
+    for (const [a, d] of parts) out.set(d, a - lo);
+    return cutAtEndF(out);
+  }
+  /** One entry of a ZIP file by name (stored or deflate; DecompressionStream('deflate-raw')). */
+  async function unzipEntry(buf, name) {
+    let e = -1;
+    for (let k = buf.length - 22; k >= Math.max(0, buf.length - 22 - 65535); k--) if (rdU32(buf, k) === 0x06054b50) { e = k; break; }
+    if (e < 0) throw new Error('not a ZIP file');
+    const n = buf[e + 10] | (buf[e + 11] << 8);
+    let c = rdU32(buf, e + 16);
+    for (let i = 0; i < n; i++) {
+      if (rdU32(buf, c) !== 0x02014b50) throw new Error('bad ZIP central directory');
+      const method = buf[c + 10] | (buf[c + 11] << 8), csize = rdU32(buf, c + 20), usize = rdU32(buf, c + 24);
+      const nl = buf[c + 28] | (buf[c + 29] << 8), xl = buf[c + 30] | (buf[c + 31] << 8), cl = buf[c + 32] | (buf[c + 33] << 8);
+      const lho = rdU32(buf, c + 42), fname = new TextDecoder().decode(buf.subarray(c + 46, c + 46 + nl));
+      c += 46 + nl + xl + cl;
+      if (fname !== name && !fname.endsWith('/' + name)) continue;
+      if (rdU32(buf, lho) !== 0x04034b50) throw new Error('bad ZIP local header');
+      const d0 = lho + 30 + (buf[lho + 26] | (buf[lho + 27] << 8)) + (buf[lho + 28] | (buf[lho + 29] << 8));
+      const raw = buf.subarray(d0, d0 + csize);
+      let out;
+      if (method === 0) out = raw.slice();
+      else if (method === 8) {
+        const ds = new DecompressionStream('deflate-raw');
+        out = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer());
+      } else throw new Error(`ZIP compression method ${method} not supported`);
+      if (out.length !== usize) throw new Error('ZIP entry size mismatch');
+      return out;
+    }
+    return null;
+  }
+  /** nRF52 DFU package (.zip from the build: manifest.json + firmware.bin + .dat) -> its application image. */
+  async function parseDfuZip(buf) {
+    let binName = 'firmware.bin';
+    const mf = await unzipEntry(buf, 'manifest.json');
+    if (mf) {
+      try { binName = JSON.parse(new TextDecoder().decode(mf)).manifest.application.bin_file || binName; } catch (e) {}
+    }
+    const bin = await unzipEntry(buf, binName);
+    if (!bin) throw new Error(`DFU zip has no ${binName}`);
+    return cutAtEndF(bin);
+  }
+
   /** The firmware's self-describing EndF trailer, or null when absent/inconsistent. */
   async function parseEndF(image) {
     if (image.length < ENDF_LEN) return null;
@@ -501,7 +567,7 @@
 
   const api = {
     init, CODEC, SEEDER, FORMAT_VER, HASH_LEN, MFL, NUDGE_PREFIX, NRF52_INPLACE_MEMORY, NRF52_MAX_INPLACE_MOTA,
-    toHex, fromHex, parseIntelHex, parseEndF, versionStr, encodeSequential, encodeInPlace, lzmaWrap, leafHashes, merkleRoot,
+    toHex, fromHex, parseIntelHex, parseUf2, parseDfuZip, unzipEntry, cutAtEndF, parseEndF, versionStr, encodeSequential, encodeInPlace, lzmaWrap, leafHashes, merkleRoot,
     parseSeed, publicKey, buildMota, parseMota, verifyMota, suggestedName, SeederCore, encodeResponse, WireParser,
     parseTargets, Nudger, Handover, dataPackets, sha256,
   };

@@ -5,8 +5,9 @@ Serial). No server, no network, no account — the firmware files and your signi
 
 It does what `motatool build` + `motatool serve --nudge` do ("method A", docs/ota_protocol.md §8.7):
 
-1. **Package** — pick the new firmware (ESP32 `firmware.bin`, nRF52 `firmware.hex`, or a ready `.mota`) and,
-   optionally, the firmware currently installed on the node to get a small delta (`.hex` → nRF52 in-place,
+1. **Package** — pick the new firmware (ESP32 `firmware.bin`, nRF52 `firmware.hex`, the build's `.uf2` or DFU
+   `.zip` — same image, EndF included — or a ready `.mota`) and,
+   optionally, the firmware currently installed on the node to get a small delta (`.hex`/`.uf2`/`.zip` → nRF52 in-place,
    `.bin` → ESP32 sequential). The page builds a format-v3 `.mota` and signs it with your Ed25519 key
    (`motatool keygen` format: 64 hex chars; the page can also create one). Output is byte-identical to motatool.
 2. **Repeater on USB** — connect any node running OTA firmware; *Start serving* sends `ota folder on` and the

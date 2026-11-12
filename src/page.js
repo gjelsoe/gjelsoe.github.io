@@ -52,6 +52,9 @@
   async function readFirmware(file) {
     const buf = new Uint8Array(await file.arrayBuffer());
     if (/\.hex$/i.test(file.name)) return { image: C.parseIntelHex(new TextDecoder().decode(buf)), kind: 'hex' };
+    // nRF52 build outputs: the UF2 and the DFU .zip carry the same app image (with EndF) as firmware.hex
+    if (/\.uf2$/i.test(file.name)) return { image: C.parseUf2(buf), kind: 'hex' };
+    if (/\.zip$/i.test(file.name)) return { image: await C.parseDfuZip(buf), kind: 'hex' };
     if (/\.mota$/i.test(file.name)) return { mota: buf, kind: 'mota' };
     return { image: buf, kind: 'bin' };
   }

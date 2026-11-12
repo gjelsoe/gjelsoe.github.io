@@ -78,11 +78,11 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-
   <section>
     <h2><span class="n">1</span> Package</h2>
     <label for="fw">New firmware</label>
-    <input id="fw" type="file" accept=".bin,.hex,.mota">
-    <p class="hint">An OTA build (<code>ENABLE_OTA</code>, carries the EndF trailer): ESP32 <code>firmware.bin</code>, nRF52 <code>firmware.hex</code>, or a ready <code>.mota</code>.</p>
+    <input id="fw" type="file" accept=".bin,.hex,.uf2,.zip,.mota">
+    <p class="hint">An OTA build (<code>ENABLE_OTA</code>, carries the EndF trailer): ESP32 <code>firmware.bin</code>, nRF52 <code>firmware.hex</code> / <code>.uf2</code> / DFU <code>.zip</code>, or a ready <code>.mota</code>.</p>
     <label for="base">Firmware installed on the node <span class="hint">(optional, makes a small delta)</span></label>
-    <input id="base" type="file" accept=".bin,.hex">
-    <p class="hint">Must be the exact image running on the node. Leave empty to send the full image. Automatic delta type: <code>.hex</code> = nRF52 in-place, <code>.bin</code> = ESP32 sequential.</p>
+    <input id="base" type="file" accept=".bin,.hex,.uf2,.zip">
+    <p class="hint">Must be the exact image running on the node. Leave empty to send the full image. Automatic delta type: <code>.hex</code> / <code>.uf2</code> / <code>.zip</code> = nRF52 in-place, <code>.bin</code> = ESP32 sequential.</p>
     <div class="row">
       <div>
         <label for="ptype">Delta type</label>

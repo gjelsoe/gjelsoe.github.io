@@ -137,6 +137,39 @@ async function t(name, fn) {
     assert(n.onRequest(S.OP_READ, pl)); assert(n.finished); assert.strictEqual(n.poll(1e9), null);
     assert.throws(() => C.parseTargets('693FAE0783'), /at least 12/);
   });
+  await t('nRF52 build outputs: .uf2 and DFU .zip give the same image as firmware.hex', async () => {
+    const zlib = require('zlib');
+    const img = C.parseIntelHex(fs.readFileSync(path.join(D, 'nrf_new.hex'), 'utf8'));
+    assert(await C.parseEndF(img), 'fixture carries EndF');
+    // UF2: 256-byte payloads from 0x26000, family 0xADA52840, last block padded with 0xFF (like the build)
+    const blocks = [], base = 0x26000, n = Math.ceil(img.length / 256);
+    for (let i = 0; i < n; i++) {
+      const b = Buffer.alloc(512); const w = (o, v) => b.writeUInt32LE(v >>> 0, o);
+      w(0, 0x0A324655); w(4, 0x9E5D5157); w(8, 0x2000); w(12, base + i * 256); w(16, 256); w(20, i); w(24, n); w(28, 0xADA52840);
+      Buffer.from(img.subarray(i * 256, i * 256 + 256)).copy(b, 32); if ((i + 1) * 256 > img.length) b.fill(0xff, 32 + img.length - i * 256, 32 + 256);
+      w(508, 0x0AB16F30); blocks.push(b);
+    }
+    assert.deepStrictEqual(Buffer.from(C.parseUf2(new Uint8Array(Buffer.concat(blocks)))), Buffer.from(img));
+    // DFU zip (deflate): manifest.json naming the application bin + firmware.bin + firmware.dat
+    const files = [['manifest.json', Buffer.from('{"manifest":{"application":{"bin_file":"app.bin","dat_file":"app.dat"}}}')],
+      ['app.dat', Buffer.from([1, 2, 3])], ['app.bin', Buffer.from(img)]];
+    const loc = [], cen = []; let off = 0;
+    for (const [name, data] of files) {
+      const comp = zlib.deflateRawSync(data), nm = Buffer.from(name);
+      const h = Buffer.alloc(30); h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(8, 8); h.writeUInt32LE(comp.length, 18);
+      h.writeUInt32LE(data.length, 22); h.writeUInt16LE(nm.length, 26);
+      const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(8, 10); c.writeUInt32LE(comp.length, 20);
+      c.writeUInt32LE(data.length, 24); c.writeUInt16LE(nm.length, 28); c.writeUInt32LE(off, 42);
+      loc.push(h, nm, comp); cen.push(c, nm); off += 30 + nm.length + comp.length;
+    }
+    const cd = Buffer.concat(cen), e = Buffer.alloc(22);
+    e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(files.length, 8); e.writeUInt16LE(files.length, 10);
+    e.writeUInt32LE(cd.length, 12); e.writeUInt32LE(off, 16);
+    const zip = new Uint8Array(Buffer.concat([...loc, cd, e]));
+    assert.deepStrictEqual(Buffer.from(await C.parseDfuZip(zip)), Buffer.from(img));
+    assert.throws(() => C.parseUf2(new Uint8Array(1000)), /not a UF2/);
+    await assert.rejects(C.parseDfuZip(new Uint8Array(100)), /not a ZIP/);
+  });
   await t('handover: host command, copy progress, verified, then the node takes the nudges', async () => {
     const mota = rd('js_seq.mota'), m = C.parseMota(mota), mid = C.toHex(m.mid);
     const h = new C.Handover({ mid: m.mid, total: mota.length, prefixes: C.parseTargets('693FAE0783D124C3 aabbccddeeff'),
