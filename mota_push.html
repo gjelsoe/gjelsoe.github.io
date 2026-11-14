@@ -4089,13 +4089,18 @@ window.MOTA_WORKER_SRC = "/* detools-js 0.1.0; MIT; adapted for Uint8Array and b
   // ---- serial link ----
   let port = null, reader = null, writer = null, writeChain = Promise.resolve(), parser = null;
   let core = null, serving = false, nudger = null, tick = null, served = null, handover = null, hoTick = null;
+  let reattach = 0;                                           // automatic `ota folder on` after the node detached
   function write(bytes) { const w = writer; writeChain = writeChain.then(() => w && w.write(bytes)).catch(() => {}); return writeChain; }
   // Replies larger than the node's serial RX buffer are written in slices with a short pause: on ESP32-S3
   // native USB (HWCDC, e.g. Heltec V4) the default RX buffer is 256 bytes and overflowing bytes are dropped,
   // so a 1 KB block reply arrived corrupted and the node silently skipped sending that block.
-  const SLICE = 128, SLICE_GAP_MS = 4;
+  // A reply that fits that buffer whole (the node reads 192-byte chunks: 197-byte frames) goes out in ONE write:
+  // the pause between slices is a timer, and a hidden browser tab throttles timers to about one per second,
+  // which is longer than the node waits for a reply — serving would stall as soon as the tab is in the
+  // background. Only larger frames (older firmware asking for 1 KB at a time) are still sliced.
+  const SLICE = 128, SLICE_GAP_MS = 4, WHOLE_MAX = 240;
   function writePaced(bytes) {
-    if (bytes.length <= SLICE) return write(bytes);
+    if (bytes.length <= WHOLE_MAX) return write(bytes);
     const w = writer;
     writeChain = writeChain.then(async () => {
       for (let o = 0; o < bytes.length && w; o += SLICE) {
@@ -4144,6 +4149,12 @@ window.MOTA_WORKER_SRC = "/* detools-js 0.1.0; MIT; adapted for Uint8Array and b
   function onWire(ev) {
     if (ev.type === 'line') {
       log(ev.text, 'dev');
+      // The node gave up on us (it got no reply for a while, e.g. this computer slept) and detached the folder.
+      // We are evidently back, so attach again — a few times at most, then leave it to the user.
+      if (serving && /OTA folder detached/.test(ev.text)) {
+        if (reattach++ < 3) { log('The USB node had stopped serving (no reply from this page); attaching again.', 'err'); queueLine('ota folder on'); }
+        else log('The USB node keeps detaching the folder. Check the USB connection, then click Start serving again.', 'err');
+      }
       if (nudger) nudger.onLine(ev.text, Date.now());
       if (handover) {                                         // an error is logged once, when the hand-over ends
         const note = handover.onLine(ev.text, Date.now());
@@ -4192,7 +4203,7 @@ window.MOTA_WORKER_SRC = "/* detools-js 0.1.0; MIT; adapted for Uint8Array and b
   }
 
   $('serve').addEventListener('click', async () => {
-    core = new C.SeederCore([pkg.bytes]); served = new Set(); serving = true; resetStats(); showStats();
+    core = new C.SeederCore([pkg.bytes]); served = new Set(); serving = true; reattach = 0; resetStats(); showStats();
     $('progress').style.width = '0%'; $('progtext').textContent = 'Serving; waiting for the mesh to ask for blocks.';
     queueLine('ota folder on');
     log(`Serving ${pkg.name} (mid ${C.toHex(pkg.m.mid)}).`, 'ok'); refresh();
