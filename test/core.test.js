@@ -170,6 +170,20 @@ async function t(name, fn) {
     assert.throws(() => C.parseUf2(new Uint8Array(1000)), /not a UF2/);
     await assert.rejects(C.parseDfuZip(new Uint8Array(100)), /not a ZIP/);
   });
+  await t('checked command: re-sent after "Unknown command" following its echo, or after a timeout', async () => {
+    const c = new C.CheckedCommand({ text: 'ota folder on', ok: /OK folder attached/, tries: 3, timeoutMs: 5000 });
+    assert.strictEqual(c.poll(0), 'ota folder on');
+    assert.strictEqual(c.onLine('  -> Unknown command', 10), null);          // the lone '\r' on older firmware: no echo yet
+    assert.strictEqual(c.onLine('\u001b[Dota folder on', 20), null);         // echo (with junk in front)
+    assert.strictEqual(c.onLine('  -> Unknown command', 30), 'retry');
+    assert.strictEqual(c.poll(40), 'ota folder on');
+    assert.strictEqual(c.poll(3000), null);                                   // waiting for the reply
+    assert.strictEqual(c.poll(5100), 'ota folder on');                        // no reply in time: third and last try
+    assert.strictEqual(c.onLine('  -> OK folder attached (serial)', 5200), 'ok'); assert(c.finished);
+    const f = new C.CheckedCommand({ text: 'x', ok: /OK/, tries: 2, timeoutMs: 100 });
+    f.poll(0); f.onLine('x', 1); assert.strictEqual(f.onLine('  -> Unknown command', 2), 'retry');
+    f.poll(3); f.onLine('x', 4); assert.strictEqual(f.onLine('  -> Unknown command', 5), 'failed'); assert(f.finished);
+  });
   await t('handover: host command, copy progress, verified, then the node takes the nudges', async () => {
     const mota = rd('js_seq.mota'), m = C.parseMota(mota), mid = C.toHex(m.mid);
     const h = new C.Handover({ mid: m.mid, total: mota.length, prefixes: C.parseTargets('693FAE0783D124C3 aabbccddeeff'),
@@ -195,7 +209,16 @@ async function t(name, fn) {
     assert.strictEqual(r.onLine('  -> ERR not signed by a trusted key (`ota key add <signer>`)', 1).level, 'err');
     assert(r.finished && /trusted key/.test(r.error));
     const o = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); o.poll(0);
-    o.onLine('  -> Unknown OTA command. Type `ota help`.', 1); assert(/cannot host/.test(o.error));
+    o.onLine(`ota host ${mid}`, 1); o.onLine('  -> Unknown OTA command. Type `ota help`.', 2);
+    assert(!o.finished, 'one garbled reply is not proof the firmware lacks ota host');
+    assert.strictEqual(o.poll(3), `ota host ${mid}`);                         // sent again
+    o.onLine(`ota host ${mid}`, 4); o.onLine('  -> Unknown OTA command. Type `ota help`.', 5);
+    assert(/cannot host/.test(o.error));
+    const g = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); g.poll(0);
+    g.onLine('  -> Unknown command', 1);                                      // the lone '\r' on older firmware
+    assert.strictEqual(g.state, 'sent', 'a reply before our echo is not about our line');
+    g.onLine(`\u0007ota host ${mid}`, 2); assert.strictEqual(g.onLine('  -> Unknown command', 3).level, 'err');
+    assert.strictEqual(g.poll(4), `ota host ${mid}`);
     const v = new C.Handover({ mid: m.mid, total: mota.length, now: 0 }); v.poll(0); v.onRead(0, 100, 10);
     v.onLine(`  -> host: not hosting (last mid=${mid}: verification failed)`, 20); assert(/verification failed/.test(v.error));
     // a lost start line is sent again; a stalled copy fails

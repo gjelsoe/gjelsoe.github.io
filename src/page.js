@@ -165,13 +165,18 @@
   // ---- serial link ----
   let port = null, reader = null, writer = null, writeChain = Promise.resolve(), parser = null;
   let core = null, serving = false, nudger = null, tick = null, served = null, handover = null, hoTick = null;
+  let reattach = 0;                                           // automatic `ota folder on` after the node detached
   function write(bytes) { const w = writer; writeChain = writeChain.then(() => w && w.write(bytes)).catch(() => {}); return writeChain; }
   // Replies larger than the node's serial RX buffer are written in slices with a short pause: on ESP32-S3
   // native USB (HWCDC, e.g. Heltec V4) the default RX buffer is 256 bytes and overflowing bytes are dropped,
   // so a 1 KB block reply arrived corrupted and the node silently skipped sending that block.
-  const SLICE = 128, SLICE_GAP_MS = 4;
+  // A reply that fits that buffer whole (the node reads 192-byte chunks: 197-byte frames) goes out in ONE write:
+  // the pause between slices is a timer, and a hidden browser tab throttles timers to about one per second,
+  // which is longer than the node waits for a reply — serving would stall as soon as the tab is in the
+  // background. Only larger frames (older firmware asking for 1 KB at a time) are still sliced.
+  const SLICE = 128, SLICE_GAP_MS = 4, WHOLE_MAX = 240;
   function writePaced(bytes) {
-    if (bytes.length <= SLICE) return write(bytes);
+    if (bytes.length <= WHOLE_MAX) return write(bytes);
     const w = writer;
     writeChain = writeChain.then(async () => {
       for (let o = 0; o < bytes.length && w; o += SLICE) {
@@ -181,7 +186,14 @@
     }).catch(() => {});
     return writeChain;
   }
-  function writeLine(text) { log('> ' + text); return write(new TextEncoder().encode(text + '\r\n')); }
+  // flush: a lone '\r' first, so stray bytes in the node's line buffer become their own (failed) line instead of
+  // a prefix of this command. Only on a RE-send (after "Unknown command"): firmware without the empty-line fix
+  // answers the lone '\r' with "Unknown command" too (CheckedCommand / Handover only count a reply that follows
+  // the echo of our own line), and older room-server / sensor consoles would glue it onto the command.
+  function writeLine(text, flush = false) {
+    log('> ' + text);
+    return write(new TextEncoder().encode((flush ? '\r' : '') + text + '\r\n'));
+  }
 
   // Console lines share the wire with the node's seeder requests. While the node waits for a seeder reply it
   // drains and skips every other byte on its serial input (MotaSourceSerial::txn), so a console line that
@@ -190,7 +202,22 @@
   let lastReqAt = 0, consoleQ = [], linkTick = null;
   const quiet = () => parser && !parser.inFrame && Date.now() - lastReqAt >= QUIET_MS;
   function queueLine(text) { consoleQ.push(text); pumpConsole(); }
-  function pumpConsole() { if (writer && consoleQ.length && quiet()) writeLine(consoleQ.shift()); }
+  function pumpConsole() {
+    if (!writer || !quiet()) return;
+    if (consoleQ.length) { writeLine(consoleQ.shift()); return; }
+    if (checked) {
+      const line = checked.poll(Date.now());
+      if (line) writeLine(line, checked.sent > 1);
+      else if (checked.state === 'failed') { checkedFailed(); }
+    }
+  }
+  // `ota folder on` is checked: re-sent if the node did not take it, reported if it never does.
+  let checked = null;
+  function folderOn() { checked = new C.CheckedCommand({ text: 'ota folder on', ok: /OK folder attached/ }); pumpConsole(); }
+  function checkedFailed() {
+    log('The USB node did not accept `ota folder on`. Check that it runs OTA firmware with folder support, then click Start serving again.', 'err');
+    checked = null;
+  }
   let stats = null, lastManifestNote = 0;
   function resetStats() { stats = { manifest: 0, leaves: 0, blocks: 0 }; }
 
@@ -220,6 +247,18 @@
   function onWire(ev) {
     if (ev.type === 'line') {
       log(ev.text, 'dev');
+      // The node gave up on us (it got no reply for a while, e.g. this computer slept) and detached the folder.
+      // We are evidently back, so attach again — a few times at most, then leave it to the user.
+      if (checked) {
+        const r = checked.onLine(ev.text, Date.now());
+        if (r === 'ok') checked = null;
+        else if (r === 'retry') log('The USB node did not take the command (stray bytes in its input); sending it again.', 'err');
+        else if (r === 'failed') checkedFailed();
+      }
+      if (serving && /OTA folder detached/.test(ev.text)) {
+        if (reattach++ < 3) { log('The USB node had stopped serving (no reply from this page); attaching again.', 'err'); folderOn(); }
+        else log('The USB node keeps detaching the folder. Check the USB connection, then click Start serving again.', 'err');
+      }
       if (nudger) nudger.onLine(ev.text, Date.now());
       if (handover) {                                         // an error is logged once, when the hand-over ends
         const note = handover.onLine(ev.text, Date.now());
@@ -268,9 +307,9 @@
   }
 
   $('serve').addEventListener('click', async () => {
-    core = new C.SeederCore([pkg.bytes]); served = new Set(); serving = true; resetStats(); showStats();
+    core = new C.SeederCore([pkg.bytes]); served = new Set(); serving = true; reattach = 0; resetStats(); showStats();
     $('progress').style.width = '0%'; $('progtext').textContent = 'Serving; waiting for the mesh to ask for blocks.';
-    queueLine('ota folder on');
+    folderOn();
     log(`Serving ${pkg.name} (mid ${C.toHex(pkg.m.mid)}).`, 'ok'); refresh();
   });
 
@@ -308,7 +347,10 @@
   });
   function handoverTick() {
     if (!handover || !writer) return;
-    if (!consoleQ.length && quiet()) { const line = handover.poll(Date.now()); if (line) writeLine(line); }
+    if (!consoleQ.length && quiet()) {
+      const line = handover.poll(Date.now());
+      if (line) writeLine(line, handover.tries > 1 && !line.startsWith('ota host nudge'));   // re-sent start line
+    }
     if (handover.state === 'hosting' || handover.state === 'done') {
       $('progress').style.width = '100%';
       $('progtext').textContent = 'The USB node holds the update and serves it to the mesh.';
@@ -340,6 +382,7 @@
   async function disconnect() {
     const p = port;
     if (nudger) stopNudging();
+    checked = null;
     if (handover) {                                         // disconnected mid-copy: the node gives up by itself
       clearInterval(hoTick); hoTick = null;
       if (handover.state !== 'hosting') msg($('hostmsg'), 'Disconnected before the USB node had the whole update; it was not handed over.', 'warn');

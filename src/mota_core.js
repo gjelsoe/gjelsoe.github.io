@@ -494,6 +494,7 @@
       confirmMs = 6000, nudgeTries = 3, now = 0 }) {
       Object.assign(this, { mid, total, install, pollMs, stallMs, startTries, confirmMs, nudgeTries });
       this.midHex = toHex(mid); this.state = 'start'; this.copied = 0; this.tries = 0; this.error = null;
+      this.echoed = false; this.unknownOta = 0;
       this.lastActivity = now; this.nextPoll = now;
       this.t = prefixes.map((p) => ({ prefix: p, confirmed: false, sentAt: null, tries: 0 }));
     }
@@ -531,8 +532,16 @@
     onLine(text, now) {
       let m;
       const early = this.state === 'sent' || this.state === 'importing';
-      if (this.state === 'sent' && /Unknown OTA command/.test(text))
-        return this.fail('This node\'s firmware cannot host updates (no `ota host`). Update it first, or keep the page open and use Send update request.');
+      if (this.state === 'sent' && text.trim().endsWith(`ota host ${this.midHex}`)) { this.echoed = true; return null; }
+      // "Unknown command" right after the echo of our line: stray bytes in the node's input garbled it -> send
+      // again. "Unknown OTA command" (twice) means the firmware really has no `ota host`.
+      if (this.state === 'sent' && this.echoed && /-> Unknown (OTA )?command/.test(text)) {
+        this.echoed = false;
+        if (/Unknown OTA command/.test(text) && ++this.unknownOta >= 2)
+          return this.fail('This node\'s firmware cannot host updates (no `ota host`). Update it first, or keep the page open and use Send update request.');
+        if (this.tries < this.startTries + 2) { this.state = 'start'; return { level: 'err', text: 'The USB node did not take the command (stray bytes in its input?); sending it again.' }; }
+        return this.fail('The USB node did not take the `ota host` command.');
+      }
       if ((m = /OK importing mid=([0-9A-F]{8})/i.exec(text)) && m[1].toUpperCase() === this.midHex) {
         if (this.state === 'sent') this.state = 'importing';
         this.lastActivity = now;
@@ -561,6 +570,40 @@
     }
   }
 
+  /**
+   * A console command whose result is checked. The node's line editor keeps whatever stray bytes reached it
+   * (a seeder reply that arrived after the node stopped waiting, noise on connect); they end up in front of
+   * the next command, which then fails with "Unknown command". This re-sends the command when the reply right
+   * after its echo is "Unknown command", or when no `ok` reply arrived within `timeoutMs`; the page puts a
+   * lone '\r' in front of a re-send so such bytes become their own line.
+   *   poll(now)        -> the line to write now (call only while the link is quiet), or null
+   *   onLine(text,now) -> 'ok' | 'retry' | 'failed' | null
+   */
+  class CheckedCommand {
+    constructor({ text, ok, tries = 3, timeoutMs = 5000 }) {
+      Object.assign(this, { text, ok, tries, timeoutMs });
+      this.state = 'queued'; this.sent = 0; this.sentAt = 0; this.echoed = false;
+    }
+    get finished() { return this.state === 'done' || this.state === 'failed'; }
+    poll(now) {
+      if (this.state === 'wait' && now - this.sentAt > this.timeoutMs) this.state = this.sent < this.tries ? 'queued' : 'failed';
+      if (this.state !== 'queued') return null;
+      this.sent++; this.sentAt = now; this.echoed = false; this.state = 'wait';
+      return this.text;
+    }
+    onLine(line, now) {
+      if (this.state !== 'wait') return null;
+      if (this.ok.test(line)) { this.state = 'done'; return 'ok'; }
+      if (line.trim().endsWith(this.text)) { this.echoed = true; return null; }   // the node echoes what it got
+      if (this.echoed && /-> Unknown command/.test(line)) {
+        this.echoed = false;
+        this.state = this.sent < this.tries ? 'queued' : 'failed';
+        return this.state === 'queued' ? 'retry' : 'failed';
+      }
+      return null;
+    }
+  }
+
   // ---- airtime estimate (rough planning aid) ----------------------------------------------------------------
   /** OTA_DATA packets for a payload: 171-byte fragments, 6 per 1 KB block (OTA_FRAG_DATA). */
   const dataPackets = (payloadSize) => Math.ceil(payloadSize / BLOCK_SIZE) * Math.ceil(BLOCK_SIZE / 171);
@@ -569,7 +612,7 @@
     init, CODEC, SEEDER, FORMAT_VER, HASH_LEN, MFL, NUDGE_PREFIX, NRF52_INPLACE_MEMORY, NRF52_MAX_INPLACE_MOTA,
     toHex, fromHex, parseIntelHex, parseUf2, parseDfuZip, unzipEntry, cutAtEndF, parseEndF, versionStr, encodeSequential, encodeInPlace, lzmaWrap, leafHashes, merkleRoot,
     parseSeed, publicKey, buildMota, parseMota, verifyMota, suggestedName, SeederCore, encodeResponse, WireParser,
-    parseTargets, Nudger, Handover, dataPackets, sha256,
+    parseTargets, Nudger, Handover, CheckedCommand, dataPackets, sha256,
   };
   return api;
 });

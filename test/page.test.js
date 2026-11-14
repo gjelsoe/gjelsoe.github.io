@@ -11,6 +11,7 @@ const D = process.argv[2], PAGE = 'file://' + path.join(__dirname, '..', 'mota_p
 
 const FAKE_SERIAL = () => {
   const sim = window.__sim = { rx: [], lines: [], replies: [], problems: [], nudges: [], requests: 0 };
+  sim.say = (t) => sendText(t);                              // a console line from the node
   let ctrl; const readable = new ReadableStream({ start(c) { ctrl = c; } });
   const send = (bytes) => ctrl.enqueue(Uint8Array.from(bytes));
   const sendText = (t) => send(new TextEncoder().encode(t));
@@ -115,7 +116,11 @@ const FAKE_SERIAL = () => {
       sendText(`  -> OK this node nudges ${h[1]} (${h[2] ? 'fetch' : 'fetch+install'}) up to 5 times, 120s apart, once it is hosting\r\n`);
       return;
     }
-    if (line === 'ota folder on') { sendText('  -> OK folder attached\r\n'); serveSession(); }
+    if (line === 'ota folder on' && !sim.garbledOnce) {          // stray bytes in the node's input garble the first one
+      sim.garbledOnce = true; sim.folderOn = (sim.folderOn || 0) + 1;
+      sendText('\u0007ota folder on\r\n  -> Unknown command\r\n'); return;
+    }
+    if (line === 'ota folder on') { sim.folderOn = (sim.folderOn || 0) + 1; sendText('  -> OK folder attached\r\n'); serveSession(); }
     const m = /^ota nudge ([0-9A-F]{12}) ([0-9A-F]{8})( fetch)?$/.exec(line);
     if (m) {
       sim.nudges.push(line);
@@ -165,13 +170,25 @@ const FAKE_SERIAL = () => {
   await page.click('#connect');
   await page.waitForSelector('#serve:not([disabled])');
   await page.click('#serve');
-  await page.waitForFunction(() => window.__sim.ready, null, { timeout: 10000 });
+  await page.waitForFunction(() => window.__sim.ready, null, { timeout: 15000 });
   const sim1 = await page.evaluate(() => window.__sim);
+  assert.strictEqual(sim1.folderOn, 2, 'a garbled `ota folder on` is sent again');
+  const sent = new TextDecoder().decode(Uint8Array.from(sim1.rx));
+  assert(sent.startsWith('ota folder on\r\n'), 'the first try is sent as before (no leading CR)');
+  assert(/\rota folder on\r\n/.test(sent.slice(15)), 'the re-send flushes the line buffer with a leading CR');
+  assert(/did not take the command/.test(await page.textContent('#log')), 'the retry is logged');
+  console.log('ok    a garbled `ota folder on` ("Unknown command") is sent again');
   assert.strictEqual(sim1.count, 1);
   assert.deepStrictEqual(sim1.desc.mid, Array.from(want.subarray(28, 32)), 'mid');
   assert.strictEqual(sim1.desc.total, want.length);
   for (const c of sim1.chunks) assert(Buffer.from(c.data).equals(want.subarray(c.off, c.off + c.data.length)), 'READ at ' + c.off);
   console.log('ok    COUNT/DESCRIBE/READ replies match the file');
+
+  // the node detaches the folder when it got no reply for a while: the page (still there) attaches again
+  await page.evaluate(() => window.__sim.say('  -> OTA folder detached: the host stopped answering (`ota folder on` re-attaches)\r\n'));
+  await page.waitForFunction(() => window.__sim.lines.filter((l) => l === 'ota folder on').length >= 3, null, { timeout: 10000 });
+  assert(/attaching again/.test(await page.textContent('#log')), 're-attach logged');
+  console.log('ok    page re-attaches after the node detached the folder');
 
   await page.fill('#targets', '693FAE0783D124C39624A5C8513F7EDD172BF7660AC5E3F9087D2C3D6DCAEB6E\nAABBCCDDEEFF');
   await page.click('details summary');
