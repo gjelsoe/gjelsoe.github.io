@@ -299,8 +299,11 @@ that only contains what changed). You get them by:
 | Cancel a download | `ota cancel` |
 | Install a finished download | `ota install` |
 | Turn on auto-download | `ota config autofetch any` |
+| (auto-download never takes a full image of the version the node already runs — use `ota get` for that) | |
 | Turn on auto-install (trusted only) | `ota config autoinstall trusted` |
 | Only offer small updates (deltas), never this node's full firmware | `ota config serve delta` |
+| Limit how much airtime OTA may use (share of the node's duty cycle, `set af`) | `ota config airtime 10` (default; `off` = no OTA limit) |
+| Send OTA in a region, so repeaters that only pass scoped floods relay it | `ota config region <name>` (`*` = unscoped) — set it on every node that sends or fetches |
 | Trust a signer | `ota key add <hex>` |
 | Update this node to one update (download + install) | `ota update <mid>` |
 | Allow signed updates to be pushed to this node | `ota config push trusted` |
