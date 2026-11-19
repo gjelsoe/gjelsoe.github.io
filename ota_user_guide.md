@@ -195,6 +195,24 @@ is spread out over hours (roughly 25 blocks per hour with the default `af 1`, 5 
 62.5 kHz). `ota` shows `air:used up` while a node waits for its share to refill. Commands you type yourself
 (`ota nudge`, `ota get`, …) always send their own packet.
 
+**Fastlane.** A transfer you start yourself (`ota update`, a nudge from the push page, `ota get`) between two
+nodes that hear each other directly can move to a faster side channel and come back when it is done. Set the
+**same** fastlane on both nodes (repeater or room server):
+
+```
+ota config fastlane 869.475 125 7 5   # EU: next to the 869.618 MHz mesh channel, ~3.5x faster
+ota config fastlane                   # show it, with a short code [a3f1] that must match on both nodes
+ota config fastlane off               # turn it off (default)
+```
+
+The nodes check with each other before they move (the short code must match), and again on the new channel
+before the transfer continues there. If anything does not fit — not set up on the other node, different
+settings, no contact on the new channel — the transfer simply carries on on the normal channel, and
+`ota config fastlane` shows why under `last:`. Both nodes are back on the normal channel when the download is
+done, after 30 s without progress, and after 10 minutes at the latest. While they are on the fastlane they
+do not repeat normal mesh traffic, so update one node at a time. Downloads that start by themselves
+(autofetch) never use the fastlane.
+
 **Regions.** If repeaters in your area only pass traffic for a region (`region deny *`), set the same
 `ota config region <name>` on every node that sends or fetches the update. Repeaters in between need no OTA
 setting, only the region allowed in their normal `region` list.
@@ -326,6 +344,7 @@ that only contains what changed). You get them by:
 | Turn on auto-install (trusted only) | `ota config autoinstall trusted` |
 | Only offer small updates (deltas), never this node's full firmware | `ota config serve delta` |
 | Limit how much airtime OTA may use (share of the node's duty cycle, `set af`) | `ota config airtime 10` (default; `off` = no OTA limit) |
+| Move a transfer you start to a faster side channel (both nodes) | `ota config fastlane 869.475 125 7 5` (EU) |
 | Send OTA in a region, so repeaters that only pass scoped floods relay it | `ota config region <name>` (`*` = unscoped) — set it on every node that sends or fetches |
 | Trust a signer | `ota key add <hex>` |
 | Update this node to one update (download + install) | `ota update <mid>` |
