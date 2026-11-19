@@ -176,8 +176,28 @@ ota config hops 0               # only exchange OTA with directly-connected node
 ota config push trusted         # let an operator push ONE update to this node by name (see below)
 ota config push off             # ignore such requests (default)
 
+ota config serve delta          # only offer small updates (deltas), never this node's full firmware
+ota config serve all            # also offer this node's own full firmware (default)
+
+ota config airtime 10           # OTA may use 10 % of this node's airtime budget (`set af`) (default)
+ota config airtime off          # no OTA limit, e.g. during a planned update on its own frequency
+ota config airtime              # show the share, seconds per hour, what is left and OTA airtime used
+
+ota config region dk            # send OTA scoped to region "dk" (for repeaters that only pass region traffic)
+ota config region *             # send OTA unscoped (default)
+
 ota config                      # show the current settings
 ```
+
+**Airtime.** Updates always come after normal traffic, and by default a node uses at most 10 % of its own
+airtime budget for OTA (own packets and passing on other nodes' OTA). A small update hardly notices; a large one
+is spread out over hours (roughly 25 blocks per hour with the default `af 1`, 5 per hour with `af 9`, at SF8 /
+62.5 kHz). `ota` shows `air:used up` while a node waits for its share to refill. Commands you type yourself
+(`ota nudge`, `ota get`, …) always send their own packet.
+
+**Regions.** If repeaters in your area only pass traffic for a region (`region deny *`), set the same
+`ota config region <name>` on every node that sends or fetches the update. Repeaters in between need no OTA
+setting, only the region allowed in their normal `region` list.
 
 Recommended for most people: leave both **off** and update by hand. Use `autoinstall trusted` only once
 you've added the signer's key (next section) and you trust them to push updates unattended.
@@ -270,7 +290,10 @@ can also run `ota folder off` on the node. `ota folder` on its own lists what yo
 You don't have to be a gateway to help. Once **any** node finishes downloading an update, it automatically
 offers it to *its* neighbours too. So a new firmware spreads outward node-to-node, instead of everyone
 hammering the one node that had it first — and no node is ever overloaded, because all of this stays
-lowest-priority.
+lowest-priority and within each node's airtime share (`ota config airtime`).
+
+An ESP32 node that installed a small update (delta) keeps offering that same delta after its restart, so
+neighbours still on the old firmware can fetch it there (`ota` shows `prev-delta:<id>`).
 
 ---
 
